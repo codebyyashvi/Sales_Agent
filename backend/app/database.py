@@ -1,3 +1,4 @@
+import time
 import logging
 from typing import Optional
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -139,4 +140,46 @@ async def seed_initial_data():
         ]
         await db.customers.insert_many(sample_customers)
         logger.info(f"Seeded {len(sample_customers)} sample customers.")
+
+    # Seed one example sales agent so the dashboard has something to dial with
+    existing_agents = await db.agents.count_documents({})
+    if existing_agents == 0:
+        now = time.time()
+        await db.agents.insert_one({
+            "agent_id": "agent_smartsave",
+            "name": "SmartSave+ Savings Agent",
+            "description": "Example agent that pitches the SmartSave+ automated savings account.",
+            "persona_name": "Aria",
+            "company_name": "SmartSave+",
+            "product_name": "SmartSave+",
+            "product_description": "SmartSave+ is an automated smart savings account offering 8.5% annual return with zero lock-in, automated NACH mandate deposits, and instant FlexiPay withdrawals.",
+            "key_features": [
+                "8.5% annual interest calculated daily and paid monthly",
+                "Zero lock-in period with instant withdrawal anytime via UPI or RuPay card",
+                "Automated micro-investing from daily round-ups and monthly NACH mandate",
+                "FlexiPay emergency credit line up to 90% of accumulated savings balance"
+            ],
+            "pricing": "Zero maintenance fee. Free withdrawals up to 5 times a month. Annual plan includes free wealth advisory.",
+            "offers": "",
+            "target_audience": "Salaried professionals and small business owners looking for better returns than a regular savings account.",
+            "faqs": [
+                {"q": "Is my money safe?", "a": "Yes, funds are held with RBI-regulated banking partners with 5 Lakh rupees DICGC insurance coverage."},
+                {"q": "What is the minimum deposit?", "a": "You can start with as little as 500 rupees."}
+            ],
+            "objections": [
+                {"objection": "Too expensive", "response": "There are no upfront or annual maintenance charges at all, you only earn interest on your deposits."},
+                {"objection": "I already have a bank account", "response": "Regular savings accounts offer 3 to 4 percent, SmartSave+ delivers up to 8.5 percent with the same instant access."}
+            ],
+            "call_objective": "Get the customer to open a zero-commitment trial account with 500 rupees.",
+            "greeting": "Hi {customer_name}, this is {agent_name} calling from {company_name}. Is this a good time for a quick two-minute chat about earning more on your savings?",
+            "closing_message": "Thank you so much for your time. Have a wonderful day!",
+            "tone": "Warm, polite, professional and consultative",
+            "additional_instructions": "",
+            "language": "en-IN",
+            "voice": "",
+            "key_terms": ["SmartSave+", "NACH", "FlexiPay", "RuPay", "DICGC", "RBI", "UPI"],
+            "created_at": now,
+            "updated_at": now
+        })
+        logger.info("Seeded sample sales agent.")
 

@@ -7,12 +7,15 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.audio.codec import wav_to_pcm, calculate_rms
 from app.audio.resampler import resample_pcm
-from app.services.silence_detector import SilenceDetector
-from app.services.call_session_manager import session_manager, CallSession
+from app.services.call_session_manager import session_manager, CallSession, load_session_profiles
 from app.services.conversation_service import conversation_service
 from app.services.providers import get_stt_provider, get_tts_provider
-from app.websocket.twilio_stream import dashboard_subscribers, broadcast_to_dashboards
-from app.database import get_db
+from app.websocket.twilio_stream import (
+    dashboard_subscribers,
+    broadcast_to_dashboards,
+    create_silence_detector,
+    synthesize_for_agent
+)
 
 logger = logging.getLogger("sales_agent.browser_stream")
 
@@ -52,30 +55,24 @@ async def handle_browser_voice_stream(websocket: WebSocket, call_id: str):
         session = session_manager.create_session(
             call_id=call_id,
             phone_number="Browser Voice Test",
-            customer_id="cust_rahul",
-            product_id="prod_smartsave"
+            customer_id="",
+            product_id="",
+            agent_id=websocket.query_params.get("agent_id")
         )
 
-    db = get_db()
-    if db is not None:
-        cust = await db.customers.find_one({"customer_id": session.customer_id})
-        if cust:
-            session.customer_data = cust
-        prod = await db.products.find_one({"product_id": session.product_id})
-        if prod:
-            session.product_data = prod
+    await load_session_profiles(session)
 
     stt = get_stt_provider()
     tts = get_tts_provider()
-    silence_detector = SilenceDetector(silence_threshold_ms=2000, min_utterance_ms=300, sample_rate=8000)
+    silence_detector = create_silence_detector()
 
     # Send initial greeting
-    greeting = await conversation_service.get_initial_greeting(session.customer_data, session.product_data)
+    greeting = await conversation_service.get_initial_greeting(session.customer_data, session.agent_data)
     session.add_message(role="assistant", text=greeting)
     await broadcast_to_dashboards("transcript_update", {"call_id": session.call_id, "message": session.messages[-1]})
 
     # Synthesize greeting
-    tts_res = await tts.synthesize(greeting)
+    tts_res = await synthesize_for_agent(tts, greeting, session)
     if tts_res.wav_bytes:
         session.is_speaking = True
         await websocket.send_bytes(tts_res.wav_bytes)
@@ -115,7 +112,7 @@ async def handle_browser_voice_stream(websocket: WebSocket, call_id: str):
                     stt_res = await stt.transcribe(
                         utterance_audio,
                         sample_rate=8000,
-                        key_terms=session.product_data.get("key_terms", [])
+                        key_terms=session.agent_data.get("key_terms", [])
                     )
                     user_text = stt_res.text.strip()
                     if not user_text:
@@ -130,7 +127,7 @@ async def handle_browser_voice_stream(websocket: WebSocket, call_id: str):
                     # 2. LLM Brain
                     turn_res = await conversation_service.process_turn(
                         customer=session.customer_data,
-                        product=session.product_data,
+                        agent=session.agent_data,
                         history=session.conversation_history,
                         current_state=session.current_state,
                         user_utterance=user_text
@@ -139,7 +136,7 @@ async def handle_browser_voice_stream(websocket: WebSocket, call_id: str):
                     session.current_state = turn_res["new_state"]
 
                     # 3. Gnani TTS
-                    tts_res = await tts.synthesize(reply_text)
+                    tts_res = await synthesize_for_agent(tts, reply_text, session)
                     total_lat = (time.perf_counter() - turn_start) * 1000
 
                     session.add_message(
@@ -178,7 +175,7 @@ async def handle_browser_voice_stream(websocket: WebSocket, call_id: str):
     finally:
         analysis = await conversation_service.generate_post_call_analysis(
             transcript=session.messages,
-            product=session.product_data,
+            agent=session.agent_data,
             customer=session.customer_data
         )
         session.outcome = analysis

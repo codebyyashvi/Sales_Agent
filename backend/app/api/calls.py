@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, Query
 from app.schemas.call import CallStartRequest, CallStartResponse, CallDetail
 from app.services.call_session_manager import session_manager
 from app.services.twilio_service import twilio_service
+from app.services.conversation_service import agent_from_product
 from app.websocket.twilio_stream import broadcast_to_dashboards
 from app.database import get_db
 from app.config import settings
@@ -22,43 +23,69 @@ async def start_call(payload: CallStartRequest, request: Request):
     if not phone:
         raise HTTPException(status_code=400, detail="Phone number is required.")
 
+    is_browser_call = phone.lower().startswith("browser") or phone == "+0000000000"
+
     # Rate limiting protection: Prevent repeated rapid calls to the same phone number within 15 seconds
     now = time.time()
     last_call = recent_calls.get(phone, 0)
-    if now - last_call < 15:
+    if not is_browser_call and now - last_call < 15:
         raise HTTPException(
             status_code=429,
             detail=f"Rate limit exceeded: A call was already initiated to {phone} recently. Please wait a moment."
         )
-    recent_calls[phone] = now
+
+    if not payload.agent_id and not payload.product_id:
+        raise HTTPException(status_code=400, detail="Please select a sales agent for this call.")
+
+    db = get_db()
+
+    agent_data = {}
+    product_data = {}
+    if payload.agent_id:
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database not connected; cannot load the selected agent.")
+        agent_data = await db.agents.find_one({"agent_id": payload.agent_id}, {"_id": 0})
+        if not agent_data:
+            raise HTTPException(status_code=404, detail=f"Agent {payload.agent_id} not found.")
+        if payload.agent_voice:
+            agent_data["voice"] = payload.agent_voice
+    else:
+        product_data = {"product_id": payload.product_id, "name": "our product"}
+        if db is not None:
+            p_doc = await db.products.find_one({"product_id": payload.product_id}, {"_id": 0})
+            if p_doc:
+                product_data = p_doc
+        agent_data = agent_from_product(product_data)
+
+    # Customer: explicit lead, else a saved lead with this phone number, else just the typed name
+    customer_data = None
+    if db is not None:
+        if payload.customer_id:
+            customer_data = await db.customers.find_one({"customer_id": payload.customer_id}, {"_id": 0})
+        if not customer_data and not phone.lower().startswith("browser"):
+            customer_data = await db.customers.find_one({"phone": phone}, {"_id": 0})
+    if not customer_data:
+        customer_data = {"customer_id": payload.customer_id or "", "name": ""}
+    if payload.customer_name and payload.customer_name.strip():
+        customer_data["name"] = payload.customer_name.strip()
+
+    if not is_browser_call:
+        recent_calls[phone] = now
 
     call_id = f"call_{uuid.uuid4().hex[:8]}"
-
-    # Verify customer and product
-    db = get_db()
-    customer_data = {"customer_id": payload.customer_id, "name": "Valued Customer"}
-    product_data = {"product_id": payload.product_id, "name": "SmartSave+"}
-
-    if db is not None:
-        c_doc = await db.customers.find_one({"customer_id": payload.customer_id})
-        if c_doc:
-            customer_data = c_doc
-        p_doc = await db.products.find_one({"product_id": payload.product_id})
-        if p_doc:
-            product_data = p_doc
-
-    # Create session
     session = session_manager.create_session(
         call_id=call_id,
         phone_number=phone,
-        customer_id=payload.customer_id,
-        product_id=payload.product_id
+        customer_id=customer_data.get("customer_id") or "",
+        product_id=payload.product_id or "",
+        agent_id=payload.agent_id
     )
     session.customer_data = customer_data
     session.product_data = product_data
+    session.agent_data = agent_data
 
     # Check if this is a browser test call or a real Twilio telephony call
-    if phone.lower().startswith("browser") or phone == "+0000000000":
+    if is_browser_call:
         logger.info(f"Initialized browser voice call session {call_id}")
         await broadcast_to_dashboards("call_started", session.to_dict())
         return CallStartResponse(
@@ -79,8 +106,8 @@ async def start_call(payload: CallStartRequest, request: Request):
     res = twilio_service.initiate_call(
         to_phone=phone,
         call_id=call_id,
-        customer_id=payload.customer_id,
-        product_id=payload.product_id,
+        customer_id=session.customer_id,
+        agent_id=payload.agent_id or "",
         public_url=public_url
     )
 
@@ -121,7 +148,12 @@ async def start_call(payload: CallStartRequest, request: Request):
 
 @router.post("/twilio/voice")
 @router.get("/twilio/voice")
-async def twilio_voice_webhook(request: Request, call_id: Optional[str] = Query(None)):
+async def twilio_voice_webhook(
+    request: Request,
+    call_id: Optional[str] = Query(None),
+    agent_id: Optional[str] = Query(None),
+    customer_id: Optional[str] = Query(None)
+):
     """
     Returns TwiML instructing Twilio to establish bidirectional Media Stream
     with our /ws/twilio-media WebSocket.
@@ -132,7 +164,9 @@ async def twilio_voice_webhook(request: Request, call_id: Optional[str] = Query(
     
     # If call_id was not in query, generate or check params
     cid = call_id or f"call_{uuid.uuid4().hex[:8]}"
-    twiml_xml = twilio_service.generate_twiml(host=host, call_id=cid, is_secure=is_secure)
+    twiml_xml = twilio_service.generate_twiml(
+        host=host, call_id=cid, is_secure=is_secure, agent_id=agent_id, customer_id=customer_id
+    )
 
     logger.info(f"Served TwiML to Twilio for call_id={cid}: {twiml_xml[:100]}...")
     return Response(content=twiml_xml, media_type="application/xml")

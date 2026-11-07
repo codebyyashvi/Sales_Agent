@@ -100,8 +100,8 @@ class AzureOpenAIProvider(LLMProvider):
 
     def _rule_based_sales_reply(self, messages: List[Dict[str, str]], system_prompt: str) -> str:
         """
-        Stateful rule-based sales agent brain that follows the exact sales objection,
-        discovery, and closing playbook.
+        Offline fallback used only when no LLM endpoint is reachable. Replies stay
+        product-neutral so they never contradict the selected agent's knowledge.
         """
         last_user_msg = ""
         for m in reversed(messages):
@@ -109,44 +109,22 @@ class AzureOpenAIProvider(LLMProvider):
                 last_user_msg = m.get("content", "").lower()
                 break
 
-        # Check for goodbye / disconnect
-        if any(w in last_user_msg for w in ["bye", "goodbye", "hang up", "talk later", "no thanks"]):
+        if any(w in last_user_msg for w in ["bye", "goodbye", "hang up", "talk later", "no thanks", "not interested"]):
             return "Thank you for your time today. Have a wonderful day ahead, goodbye!"
 
-        # Check for human handoff
-        if any(w in last_user_msg for w in ["human", "real person", "agent", "representative", "manager", "transfer"]):
-            return "I will gladly connect you with a senior representative who can assist you immediately. Please hold on a moment."
-
-        # Check for pricing questions
-        if any(w in last_user_msg for w in ["price", "cost", "how much", "charges", "fees", "expensive"]):
-            if "smartsave" in system_prompt.lower():
-                return "SmartSave+ has zero account opening and zero maintenance charges. You earn up to 8.5% interest on all your deposits with complete liquidity."
-            return "Our pricing is transparent with no hidden fees, starting with a free trial. Would you like me to share a quick comparison of the plans?"
-
-        # Check for trust / safety questions
-        if any(w in last_user_msg for w in ["safe", "security", "rbi", "trust", "guarantee", "fraud", "risk"]):
-            if "smartsave" in system_prompt.lower():
-                return "Your funds are 100% secure with RBI-regulated banking partners and insured up to ₹5 Lakh by DICGC. Security and capital safety are our top priorities."
-            return "We adhere to enterprise-grade compliance with SOC2 and full encryption to guarantee complete data security."
-
-        # Check for interest / positive buying intent
-        if any(w in last_user_msg for w in ["yes", "tell me more", "how does it work", "sounds good", "interested", "sure", "okay"]):
-            if "smartsave" in system_prompt.lower():
-                return "SmartSave+ lets you automate monthly deposits via NACH and earn 8.5% daily compounding interest, with instant withdrawals whenever you need. How much do you typically allocate for monthly savings?"
-            return "Wonderful! The platform automates your workflow seamlessly and delivers immediate return on investment. Would you like a brief demo link sent to your email?"
-
-        # Check for objections
-        if any(w in last_user_msg for w in ["already have", "using another", "bank", "competitor"]):
-            return "That makes complete sense. Most of our clients previously used traditional bank accounts that only offered 3% returns, whereas SmartSave+ provides up to 8.5% with the exact same instant accessibility. Would you be open to seeing how the returns compare?"
+        if any(w in last_user_msg for w in ["human", "real person", "representative", "manager", "transfer"]):
+            return "Of course, I will arrange for a senior representative to get in touch with you shortly."
 
         if any(w in last_user_msg for w in ["busy", "call later", "not right now", "driving", "meeting"]):
-            return "I completely understand! Would it be better if we followed up with you tomorrow morning at 11 AM?"
+            return "I completely understand. When would be a better time for us to call you back?"
 
-        # Default opening / engagement
-        if len(messages) <= 2:
-            return "Hello! I am calling regarding SmartSave+, which helps you automate monthly savings while giving you flexible access to your funds. Is now a good time for a quick 2-minute overview?"
+        if any(w in last_user_msg for w in ["price", "cost", "how much", "charges", "fees", "expensive"]):
+            return "I don't want to give you incorrect pricing details, so I'll have a team member share the exact numbers with you. Would that be alright?"
 
-        return "That is a great point. SmartSave+ is designed specifically for automated flexibility and higher compounding returns. Would you like me to guide you through setting up a quick test account?"
+        if any(w in last_user_msg for w in ["yes", "tell me more", "how does it work", "sounds good", "interested", "sure", "okay"]):
+            return "Wonderful! Could you tell me a little about what you're looking for, so I can explain the parts most relevant to you?"
+
+        return "I see, thank you for sharing that. Could you tell me a bit more about what matters most to you here?"
 
     async def analyze_call(
         self,

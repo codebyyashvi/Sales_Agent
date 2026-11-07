@@ -4,9 +4,11 @@ from datetime import datetime
 
 class CallStartRequest(BaseModel):
     phone_number: str = Field(..., description="Target phone number (e.g. +91XXXXXXXXXX or +1XXXXXXXXXX)")
-    customer_id: Optional[str] = Field(default="cust_rahul", description="Customer ID")
-    product_id: Optional[str] = Field(default="prod_smartsave", description="Product ID")
-    agent_voice: Optional[str] = Field(default="Nalini", description="Gnani TTS Voice")
+    agent_id: Optional[str] = Field(default=None, description="Sales agent whose profile drives the conversation")
+    customer_id: Optional[str] = Field(default=None, description="Saved customer lead ID (optional)")
+    customer_name: Optional[str] = Field(default=None, description="Customer name if no saved lead is used")
+    product_id: Optional[str] = Field(default=None, description="Legacy product ID, used only when no agent_id is given")
+    agent_voice: Optional[str] = Field(default=None, description="Override the agent's Gnani TTS voice")
 
 class CallStartResponse(BaseModel):
     call_id: str

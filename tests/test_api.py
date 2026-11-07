@@ -62,7 +62,47 @@ def test_api_suite():
         assert res.status_code == 200
         print("✓ /api/calls/{id}/end passed")
 
-        # 8. Analytics overview
+        # 8. Sales agent CRUD + call session bound to that agent
+        agent_payload = {
+            "name": "Test Solar Agent",
+            "persona_name": "Riya",
+            "company_name": "SunVolt",
+            "product_name": "SunVolt Rooftop Solar",
+            "product_description": "Rooftop solar panels for homes.",
+            "key_features": ["25 year warranty"],
+            "pricing": "Rs 60,000 per kW",
+            "faqs": [{"q": "Subsidy?", "a": "Yes, subsidy applies."}],
+            "objections": [{"objection": "too costly", "response": "EMI starts at 2000 a month."}],
+            "greeting": "Hello {customer_name}, {agent_name} here from {company_name}."
+        }
+        res = client.post("/api/agents", json=agent_payload)
+        assert res.status_code == 200
+        agent_id = res.json()["agent_id"]
+
+        res = client.put(f"/api/agents/{agent_id}", json={**agent_payload, "pricing": "Rs 55,000 per kW"})
+        assert res.status_code == 200
+        assert res.json()["pricing"] == "Rs 55,000 per kW"
+
+        res = client.post("/api/calls/start", json={
+            "phone_number": "browser_agent_test",
+            "agent_id": agent_id,
+            "customer_name": "Amit"
+        })
+        assert res.status_code == 200
+        agent_call_id = res.json()["call_id"]
+        detail = client.get(f"/api/calls/{agent_call_id}").json()
+        assert detail["agent_id"] == agent_id
+        assert detail["product_name"] == "SunVolt Rooftop Solar"
+        client.post(f"/api/calls/{agent_call_id}/end")
+
+        assert client.post("/api/calls/start", json={"phone_number": "browser_x", "agent_id": "agent_missing"}).status_code == 404
+
+        res = client.delete(f"/api/agents/{agent_id}")
+        assert res.status_code == 200
+        assert client.get(f"/api/agents/{agent_id}").status_code == 404
+        print("✓ /api/agents CRUD + agent-bound call session passed")
+
+        # 9. Analytics overview
         res = client.get("/api/analytics/overview")
         assert res.status_code == 200
         assert "total_calls" in res.json()

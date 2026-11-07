@@ -3,6 +3,7 @@ import uuid
 import logging
 from typing import Dict, Any, Optional, List
 from app.database import get_db
+from app.services.conversation_service import agent_from_product
 
 logger = logging.getLogger("sales_agent.call_manager")
 
@@ -13,12 +14,14 @@ class CallSession:
         phone_number: str,
         customer_id: str,
         product_id: str,
-        call_sid: Optional[str] = None
+        call_sid: Optional[str] = None,
+        agent_id: Optional[str] = None
     ):
         self.call_id = call_id
         self.phone_number = phone_number
         self.customer_id = customer_id
         self.product_id = product_id
+        self.agent_id = agent_id
         self.call_sid = call_sid
         self.stream_sid: Optional[str] = None
 
@@ -37,6 +40,8 @@ class CallSession:
 
         self.customer_data: Dict[str, Any] = {}
         self.product_data: Dict[str, Any] = {}
+        # Selected sales agent profile; the only knowledge source for the LLM on this call
+        self.agent_data: Dict[str, Any] = {}
         
         self.metrics: Dict[str, Any] = {
             "turns_count": 0,
@@ -99,8 +104,10 @@ class CallSession:
             "phone_number": self.phone_number,
             "customer_id": self.customer_id,
             "customer_name": self.customer_data.get("name", "Unknown"),
+            "agent_id": self.agent_id,
+            "agent_name": self.agent_data.get("name", ""),
             "product_id": self.product_id,
-            "product_name": self.product_data.get("name", "Unknown"),
+            "product_name": self.agent_data.get("product_name") or self.product_data.get("name", "Unknown"),
             "status": self.status,
             "state": self.current_state,
             "start_time": self.start_time,
@@ -126,14 +133,16 @@ class CallSessionManager:
         phone_number: str,
         customer_id: str,
         product_id: str,
-        call_sid: Optional[str] = None
+        call_sid: Optional[str] = None,
+        agent_id: Optional[str] = None
     ) -> CallSession:
         session = CallSession(
             call_id=call_id,
             phone_number=phone_number,
             customer_id=customer_id,
             product_id=product_id,
-            call_sid=call_sid
+            call_sid=call_sid,
+            agent_id=agent_id
         )
         self.active_sessions[call_id] = session
         if call_sid:
@@ -183,6 +192,28 @@ class CallSessionManager:
                 logger.info(f"Persisted ended call {call_id} to MongoDB.")
             except Exception as e:
                 logger.error(f"Failed to persist call {call_id} to MongoDB: {e}")
+
+
+async def load_session_profiles(session: CallSession):
+    """Load customer and agent profiles from MongoDB if they were not attached at call start."""
+    db = get_db()
+    if db is not None:
+        if not session.customer_data and session.customer_id:
+            cust = await db.customers.find_one({"customer_id": session.customer_id})
+            if cust:
+                session.customer_data = cust
+        if not session.agent_data and session.agent_id:
+            agent = await db.agents.find_one({"agent_id": session.agent_id}, {"_id": 0})
+            if agent:
+                session.agent_data = agent
+        if not session.agent_data and not session.product_data and session.product_id:
+            prod = await db.products.find_one({"product_id": session.product_id}, {"_id": 0})
+            if prod:
+                session.product_data = prod
+
+    if not session.agent_data and session.product_data:
+        session.agent_data = agent_from_product(session.product_data)
+
 
 session_manager = CallSessionManager()
 

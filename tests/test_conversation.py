@@ -32,6 +32,21 @@ async def test_conversation_flow():
     assert "Rahul" in greeting
     assert "SmartSave+" in greeting
 
+    # Agent profile drives greeting and prompt
+    agent = {
+        "name": "Solar Agent",
+        "persona_name": "Riya",
+        "company_name": "SunVolt",
+        "product_name": "SunVolt Rooftop Solar",
+        "product_description": "Rooftop solar panels for homes.",
+        "pricing": "Rs 60,000 per kW",
+        "greeting": "Hello {customer_name}, {agent_name} from {company_name} here."
+    }
+    assert await conversation_service.get_initial_greeting(customer, agent) == "Hello Rahul Sharma, Riya from SunVolt here."
+    prompt = conversation_service.build_system_prompt(customer, agent, "INTRO")
+    assert "SunVolt Rooftop Solar" in prompt and "Rs 60,000 per kW" in prompt
+    assert "SmartSave" not in prompt
+
     # Test objection handling state transition
     state1 = conversation_service.advance_state("DISCOVERY", "Your product sounds too expensive", 1)
     assert state1 == "OBJECTION_HANDLING"

@@ -21,7 +21,14 @@ class TwilioService:
             except Exception as e:
                 logger.warning(f"Failed to initialize Twilio client: {e}")
 
-    def generate_twiml(self, host: str, call_id: str, is_secure: bool = True) -> str:
+    def generate_twiml(
+        self,
+        host: str,
+        call_id: str,
+        is_secure: bool = True,
+        agent_id: Optional[str] = None,
+        customer_id: Optional[str] = None
+    ) -> str:
         """
         Generate TwiML response instructing Twilio to initiate bidirectional Media Stream.
         """
@@ -34,6 +41,10 @@ class TwilioService:
         stream = Stream(url=stream_url)
         # Pass custom parameters to stream start event
         stream.parameter(name="call_id", value=call_id)
+        if agent_id:
+            stream.parameter(name="agent_id", value=agent_id)
+        if customer_id:
+            stream.parameter(name="customer_id", value=customer_id)
         connect.append(stream)
         response.append(connect)
         return str(response)
@@ -43,7 +54,7 @@ class TwilioService:
         to_phone: str,
         call_id: str,
         customer_id: str,
-        product_id: str,
+        agent_id: str = "",
         public_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -63,7 +74,7 @@ class TwilioService:
         query_params = urllib.parse.urlencode({
             "call_id": call_id,
             "customer_id": customer_id,
-            "product_id": product_id
+            "agent_id": agent_id
         })
         twiml_webhook_url = f"{base_url}/twilio/voice?{query_params}"
         status_callback_url = f"{base_url}/twilio/status?call_id={call_id}"

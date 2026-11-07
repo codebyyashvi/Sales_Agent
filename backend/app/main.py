@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import settings
 from app.database import connect_db, close_db, get_db
-from app.api import calls, customers, products, analytics
+from app.api import calls, customers, products, analytics, agents
 from app.websocket.twilio_stream import handle_twilio_media_stream
 from app.websocket.browser_stream import handle_dashboard_websocket, handle_browser_voice_stream
 
@@ -47,6 +47,7 @@ app.add_middleware(
 # Include REST API routers
 app.include_router(calls.router, tags=["Calls & Twilio Webhooks"])
 app.include_router(customers.router, tags=["Customers CRM"])
+app.include_router(agents.router, tags=["Sales Agents"])
 app.include_router(products.router, tags=["Product Knowledge"])
 app.include_router(analytics.router, tags=["Call Analytics"])
 

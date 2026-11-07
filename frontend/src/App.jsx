@@ -3,7 +3,6 @@ import {
   PhoneCall,
   Radio,
   Users,
-  Package,
   BarChart3,
   Settings,
   Phone,
@@ -22,8 +21,10 @@ import {
   Copy,
   Check,
   X,
-  Loader2
+  Loader2,
+  Bot
 } from 'lucide-react'
+import AgentsTab from './components/AgentsTab'
 
 function App() {
   // Navigation
@@ -32,11 +33,11 @@ function App() {
 
   // Call configuration
   const [customers, setCustomers] = useState([])
-  const [products, setProducts] = useState([])
+  const [agents, setAgents] = useState([])
+  const [selectedAgentId, setSelectedAgentId] = useState('')
   const [selectedCustomerId, setSelectedCustomerId] = useState('')
   const [phoneNumber, setPhoneNumber] = useState('')
-  const [selectedProductId, setSelectedProductId] = useState('prod_smartsave')
-  const [selectedVoice, setSelectedVoice] = useState('Nalini')
+  const [customerName, setCustomerName] = useState('')
 
   // Active call state
   const [activeCallId, setActiveCallId] = useState(null)
@@ -72,6 +73,7 @@ function App() {
 
   // Audio Context & WebSockets Refs
   const dashboardWsRef = useRef(null)
+  const unmountingRef = useRef(false)
   const browserWsRef = useRef(null)
   const audioContextRef = useRef(null)
   const mediaStreamRef = useRef(null)
@@ -81,13 +83,22 @@ function App() {
   const canvasRef = useRef(null)
   const waveEnergyRef = useRef(10)
 
-  // Initialize
+  // Initialize data and the dashboard WebSocket once
   useEffect(() => {
+    unmountingRef.current = false
     fetchCustomers()
-    fetchProducts()
+    fetchAgents()
     fetchAnalytics()
     setupDashboardWebSocket()
 
+    return () => {
+      unmountingRef.current = true
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
+      if (dashboardWsRef.current) dashboardWsRef.current.close()
+    }
+  }, [])
+
+  useEffect(() => {
     // Setup Waveform Animation
     let animId
     const renderWave = () => {
@@ -125,11 +136,7 @@ function App() {
       renderWave()
     }
 
-    return () => {
-      cancelAnimationFrame(animId)
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current)
-      if (dashboardWsRef.current) dashboardWsRef.current.close()
-    }
+    return () => cancelAnimationFrame(animId)
   }, [activeCallId])
 
   // Auto-scroll transcript
@@ -151,7 +158,7 @@ function App() {
     ws.onopen = () => setSystemOnline(true)
     ws.onclose = () => {
       setSystemOnline(false)
-      setTimeout(setupDashboardWebSocket, 3000)
+      if (!unmountingRef.current) setTimeout(setupDashboardWebSocket, 3000)
     }
 
     ws.onmessage = (event) => {
@@ -169,7 +176,9 @@ function App() {
       setActiveCallId(data.call_id)
       setCallStatus('ACTIVE CALL')
       setActiveCustomerName(data.customer_name || 'Customer')
-      setActivePhoneDisplay(data.phone_number || '')
+      setActivePhoneDisplay(
+        [data.phone_number, data.agent_name && `Agent: ${data.agent_name}`].filter(Boolean).join(' • ')
+      )
       setTranscript([])
       setCallState('INTRO')
       startCallTimer()
@@ -215,22 +224,21 @@ function App() {
       const res = await fetch('/api/customers')
       const data = await res.json()
       setCustomers(data)
-      if (data.length > 0 && !selectedCustomerId) {
-        setSelectedCustomerId(data[0].customer_id)
-        setPhoneNumber(data[0].phone)
-      }
     } catch (e) {
       console.error('Failed to fetch customers:', e)
     }
   }
 
-  const fetchProducts = async () => {
+  const fetchAgents = async () => {
     try {
-      const res = await fetch('/api/products')
+      const res = await fetch('/api/agents')
       const data = await res.json()
-      setProducts(data)
+      setAgents(data)
+      setSelectedAgentId((current) =>
+        data.some((a) => a.agent_id === current) ? current : data[0]?.agent_id || ''
+      )
     } catch (e) {
-      console.error('Failed to fetch products:', e)
+      console.error('Failed to fetch agents:', e)
     }
   }
 
@@ -254,12 +262,28 @@ function App() {
     const cust = customers.find((c) => c.customer_id === custId)
     if (cust) {
       setPhoneNumber(cust.phone)
-      if (cust.preferred_product_id) setSelectedProductId(cust.preferred_product_id)
+      setCustomerName(cust.name)
     }
   }
 
+  const requestCallSession = (phone) =>
+    fetch('/api/calls/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone_number: phone,
+        agent_id: selectedAgentId,
+        customer_id: selectedCustomerId || null,
+        customer_name: customerName || null
+      })
+    })
+
   // Start Real Outbound Twilio Call
   const startTwilioCall = async () => {
+    if (!selectedAgentId) {
+      alert('Please create or select a sales agent first.')
+      return
+    }
     if (!phoneNumber) {
       alert('Please enter a target phone number.')
       return
@@ -267,17 +291,7 @@ function App() {
 
     setIsCalling(true)
     try {
-      const res = await fetch('/api/calls/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone_number: phoneNumber,
-          customer_id: selectedCustomerId || 'cust_rahul',
-          product_id: selectedProductId || 'prod_smartsave',
-          agent_voice: selectedVoice
-        })
-      })
-
+      const res = await requestCallSession(phoneNumber)
       const data = await res.json()
       if (res.ok && data.status !== 'failed') {
         setActiveCallId(data.call_id)
@@ -298,8 +312,22 @@ function App() {
       endCall()
       return
     }
+    if (!selectedAgentId) {
+      alert('Please create or select a sales agent first.')
+      return
+    }
 
-    const callId = `browser_${Date.now()}`
+    let callId
+    try {
+      const res = await requestCallSession('browser')
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Could not start sandbox session.')
+      callId = data.call_id
+    } catch (err) {
+      alert(err.message)
+      return
+    }
+
     setActiveCallId(callId)
     setIsBrowserVoiceActive(true)
     setCallStatus('BROWSER MIC ACTIVE')
@@ -388,7 +416,12 @@ function App() {
   const handleQuickDial = (cust) => {
     setSelectedCustomerId(cust.customer_id)
     setPhoneNumber(cust.phone)
-    if (cust.preferred_product_id) setSelectedProductId(cust.preferred_product_id)
+    setCustomerName(cust.name)
+    setActiveTab('dialer')
+  }
+
+  const handleUseAgent = (agent) => {
+    setSelectedAgentId(agent.agent_id)
     setActiveTab('dialer')
   }
 
@@ -422,8 +455,7 @@ function App() {
           name: newCustName,
           phone: newCustPhone,
           company: newCustCompany,
-          designation: newCustRole,
-          preferred_product_id: selectedProductId
+          designation: newCustRole
         })
       })
       setIsAddCustomerOpen(false)
@@ -501,15 +533,15 @@ function App() {
               <span>Customers CRM</span>
             </button>
             <button
-              onClick={() => setActiveTab('products')}
+              onClick={() => setActiveTab('agents')}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center space-x-2 ${
-                activeTab === 'products'
+                activeTab === 'agents'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'text-gray-400 hover:text-gray-200'
               }`}
             >
-              <Package className="w-4 h-4" />
-              <span>Product Knowledge</span>
+              <Bot className="w-4 h-4" />
+              <span>Sales Agents</span>
             </button>
             <button
               onClick={() => setActiveTab('analytics')}
@@ -566,19 +598,29 @@ function App() {
                 <div className="flex-1 grid grid-cols-1 md:grid-cols-4 gap-3">
                   <div>
                     <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                      Select Customer Lead
+                      Sales Agent
                     </label>
-                    <select
-                      value={selectedCustomerId}
-                      onChange={handleCustomerChange}
-                      className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3.5 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-emerald-500"
-                    >
-                      {customers.map((c) => (
-                        <option key={c.customer_id} value={c.customer_id}>
-                          {c.name} ({c.company})
-                        </option>
-                      ))}
-                    </select>
+                    {agents.length === 0 ? (
+                      <button
+                        onClick={() => setActiveTab('agents')}
+                        className="w-full bg-gray-950 border border-dashed border-emerald-600/60 rounded-xl px-3.5 py-2.5 text-sm text-emerald-400 hover:bg-emerald-500/10 flex items-center justify-center space-x-1.5"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Create an agent</span>
+                      </button>
+                    ) : (
+                      <select
+                        value={selectedAgentId}
+                        onChange={(e) => setSelectedAgentId(e.target.value)}
+                        className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3.5 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-emerald-500"
+                      >
+                        {agents.map((a) => (
+                          <option key={a.agent_id} value={a.agent_id}>
+                            {a.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
 
                   <div>
@@ -592,7 +634,10 @@ function App() {
                       <input
                         type="text"
                         value={phoneNumber}
-                        onChange={(e) => setPhoneNumber(e.target.value)}
+                        onChange={(e) => {
+                          setPhoneNumber(e.target.value)
+                          setSelectedCustomerId('')
+                        }}
                         placeholder="+91XXXXXXXXXX"
                         className="w-full bg-gray-950 border border-gray-700 rounded-xl pl-10 pr-3 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-emerald-500 font-mono"
                       />
@@ -601,32 +646,32 @@ function App() {
 
                   <div>
                     <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                      Pitch Product
+                      Customer Name (optional)
                     </label>
-                    <select
-                      value={selectedProductId}
-                      onChange={(e) => setSelectedProductId(e.target.value)}
+                    <input
+                      type="text"
+                      value={customerName}
+                      onChange={(e) => setCustomerName(e.target.value)}
+                      placeholder="e.g. Amit Shah"
                       className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3.5 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-emerald-500"
-                    >
-                      {products.map((p) => (
-                        <option key={p.product_id} value={p.product_id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </div>
 
                   <div>
                     <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                      Gnani Voice
+                      Saved Lead (optional)
                     </label>
                     <select
-                      value={selectedVoice}
-                      onChange={(e) => setSelectedVoice(e.target.value)}
+                      value={selectedCustomerId}
+                      onChange={handleCustomerChange}
                       className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3.5 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-emerald-500"
                     >
-                      <option value="Nalini">Nalini (Natural Female)</option>
-                      <option value="Aryan">Aryan (Professional Male)</option>
+                      <option value="">None</option>
+                      {customers.map((c) => (
+                        <option key={c.customer_id} value={c.customer_id}>
+                          {c.name} ({c.company})
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -1090,55 +1135,9 @@ function App() {
           </div>
         )}
 
-        {/* TAB 3: PRODUCT KNOWLEDGE BASE */}
-        {activeTab === 'products' && (
-          <div className="space-y-6">
-            <div>
-              <h2 className="text-xl font-bold text-white">Product Knowledge Base</h2>
-              <p className="text-sm text-gray-400">
-                Strictly verified product specifications, objection playbooks, and STT key terms
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {products.map((p) => (
-                <div
-                  key={p.product_id}
-                  className="bg-gray-900/70 border border-gray-800 rounded-2xl p-6 shadow-xl space-y-4"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="text-xs font-mono font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                        {p.product_id}
-                      </span>
-                      <h3 className="text-lg font-bold text-white mt-1">{p.name}</h3>
-                    </div>
-                    <span className="text-xs text-gray-400">{p.category}</span>
-                  </div>
-                  <p className="text-xs text-gray-300 leading-relaxed">{p.description}</p>
-                  <div>
-                    <span className="text-xs font-semibold text-gray-400 block mb-1">Pricing</span>
-                    <p className="text-xs text-emerald-400 font-medium">{p.pricing}</p>
-                  </div>
-                  <div>
-                    <span className="text-xs font-semibold text-gray-400 block mb-1">
-                      Key Voice Vocabulary Terms
-                    </span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(p.key_terms || []).map((term, i) => (
-                        <span
-                          key={i}
-                          className="px-2 py-0.5 bg-gray-950 border border-gray-800 rounded text-[11px] font-mono text-gray-400"
-                        >
-                          {term}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+        {/* TAB 3: SALES AGENTS */}
+        {activeTab === 'agents' && (
+          <AgentsTab agents={agents} onAgentsChanged={fetchAgents} onUseAgent={handleUseAgent} />
         )}
 
         {/* TAB 4: ANALYTICS & LOGS */}

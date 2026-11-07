@@ -13,10 +13,10 @@ from app.audio.codec import (
     wav_to_pcm
 )
 from app.services.silence_detector import SilenceDetector
-from app.services.call_session_manager import session_manager, CallSession
+from app.services.call_session_manager import session_manager, CallSession, load_session_profiles
 from app.services.conversation_service import conversation_service
 from app.services.providers import get_stt_provider, get_tts_provider
-from app.database import get_db
+from app.config import settings
 
 logger = logging.getLogger("sales_agent.twilio_stream")
 
@@ -36,6 +36,23 @@ async def broadcast_to_dashboards(event_type: str, data: Dict[str, Any]):
             disconnected.add(ws)
     for ws in disconnected:
         dashboard_subscribers.discard(ws)
+
+def create_silence_detector() -> SilenceDetector:
+    return SilenceDetector(
+        silence_threshold_ms=settings.SILENCE_THRESHOLD_MS,
+        min_utterance_ms=settings.MIN_UTTERANCE_MS,
+        energy_threshold=settings.VAD_ENERGY_THRESHOLD,
+        sample_rate=settings.AUDIO_SAMPLE_RATE
+    )
+
+async def synthesize_for_agent(tts, text: str, session: CallSession):
+    """Gnani TTS using the selected agent's voice and language (env defaults otherwise)."""
+    agent = session.agent_data or {}
+    return await tts.synthesize(
+        text,
+        voice=agent.get("voice") or None,
+        language=agent.get("language") or None
+    )
 
 async def stream_audio_to_twilio(
     ws: WebSocket,
@@ -97,7 +114,7 @@ async def handle_twilio_media_stream(websocket: WebSocket):
     stream_sid: Optional[str] = None
     call_id: Optional[str] = None
     session: Optional[CallSession] = None
-    silence_detector = SilenceDetector(silence_threshold_ms=2000, min_utterance_ms=300)
+    silence_detector = create_silence_detector()
 
     stt = get_stt_provider()
     tts = get_tts_provider()
@@ -139,29 +156,23 @@ async def handle_twilio_media_stream(websocket: WebSocket):
                     session = session_manager.create_session(
                         call_id=call_id,
                         phone_number="Incoming Twilio Stream",
-                        customer_id="cust_rahul",
-                        product_id="prod_smartsave",
-                        call_sid=call_sid
+                        customer_id=custom_params.get("customer_id", ""),
+                        product_id="",
+                        call_sid=call_sid,
+                        agent_id=custom_params.get("agent_id") or None
                     )
 
                 session_manager.register_stream(stream_sid, session.call_id)
-
-                # Fetch customer and product info from DB
-                db = get_db()
-                if db is not None:
-                    cust_doc = await db.customers.find_one({"customer_id": session.customer_id})
-                    if cust_doc:
-                        session.customer_data = cust_doc
-                    prod_doc = await db.products.find_one({"product_id": session.product_id})
-                    if prod_doc:
-                        session.product_data = prod_doc
+                await load_session_profiles(session)
+                if not session.agent_data:
+                    logger.warning(f"[Twilio WS] No agent profile found for call {session.call_id}")
 
                 # Broadcast call started
                 await broadcast_to_dashboards("call_started", session.to_dict())
 
                 # Send initial greeting
                 greeting = await conversation_service.get_initial_greeting(
-                    session.customer_data, session.product_data
+                    session.customer_data, session.agent_data
                 )
                 session.add_message(role="assistant", text=greeting)
                 await broadcast_to_dashboards("transcript_update", {
@@ -170,7 +181,7 @@ async def handle_twilio_media_stream(websocket: WebSocket):
                 })
 
                 # Synthesize greeting speech
-                tts_res = await tts.synthesize(greeting)
+                tts_res = await synthesize_for_agent(tts, greeting, session)
                 if tts_res.wav_bytes:
                     playback_task = asyncio.create_task(
                         stream_audio_to_twilio(websocket, stream_sid, tts_res.wav_bytes, session)
@@ -220,7 +231,7 @@ async def handle_twilio_media_stream(websocket: WebSocket):
                     logger.info(f"[Twilio WS] Utterance complete ({dur_ms}ms). Sending to Gnani STT...")
 
                     # 1. Gnani STT
-                    key_terms = session.product_data.get("key_terms", [])
+                    key_terms = session.agent_data.get("key_terms", [])
                     stt_res = await stt.transcribe(audio_utterance, sample_rate=8000, key_terms=key_terms)
                     
                     user_text = stt_res.text.strip()
@@ -242,7 +253,7 @@ async def handle_twilio_media_stream(websocket: WebSocket):
                     # 2. Conversation / LLM Brain
                     turn_res = await conversation_service.process_turn(
                         customer=session.customer_data,
-                        product=session.product_data,
+                        agent=session.agent_data,
                         history=session.conversation_history,
                         current_state=session.current_state,
                         user_utterance=user_text
@@ -253,7 +264,7 @@ async def handle_twilio_media_stream(websocket: WebSocket):
                     llm_latency = turn_res["latency_ms"]
 
                     # 3. Gnani TTS
-                    tts_res = await tts.synthesize(reply_text)
+                    tts_res = await synthesize_for_agent(tts, reply_text, session)
                     total_latency = (time.perf_counter() - turn_start_time) * 1000
 
                     # Record assistant message
@@ -301,7 +312,7 @@ async def handle_twilio_media_stream(websocket: WebSocket):
             logger.info(f"Generating post-call analysis for call {session.call_id}...")
             analysis = await conversation_service.generate_post_call_analysis(
                 transcript=session.messages,
-                product=session.product_data,
+                agent=session.agent_data,
                 customer=session.customer_data
             )
             session.outcome = analysis
