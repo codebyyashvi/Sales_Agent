@@ -96,14 +96,14 @@ Aria is not a standard turn-based chatbot or simple IVR. It is a full-duplex, lo
 ### 2. Setup Environment
 Ensure your `.env` file in the root directory is populated:
 ```ini
-TWILIO_ACCOUNT_SID=AC8d5f8f453385e9bf164d33145a5985d8
-TWILIO_AUTH_TOKEN=2940e7df533bea63b19ff1370792b2fd
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
 TWILIO_PHONE_NUMBER=+18088004708
 
-GNANI_API_KEY=vach_1ytE2CY5X2ESDLh0KNPbjZbKdeE04DN2YDCfpynUEDijrb35Ljtdbe7U8vvALWXjrTpyplfAsf4kKtAGtPJLZqkU9KNcLNlR_56ae7928f8c78861efc0cc7848ec775d
+GNANI_API_KEY=
 GNANI_BASE_URL=https://api.vachana.ai
 
-MONGO_URI=mongodb+srv://Ranu:ranu@cluster0.iwtsa.mongodb.net
+MONGO_URI=
 MONGO_DB_NAME=sales_ai_agent
 
 SILENCE_THRESHOLD_MS=2000
