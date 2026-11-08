@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
-from app.main import app
+from backend.app.main import app
 
 def test_api_suite():
     with TestClient(app) as client:

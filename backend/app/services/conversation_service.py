@@ -229,7 +229,7 @@ class ConversationService:
         messages = list(history)
         messages.append({"role": "user", "content": user_utterance})
 
-        llm_resp = await self.llm.generate_reply(messages, system_prompt)
+        llm_resp = await self.llm.generate_reply(messages, system_prompt, agent_profile=agent)
 
         return {
             "reply_text": llm_resp.content,

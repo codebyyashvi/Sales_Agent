@@ -69,7 +69,11 @@ class GnaniSTTProvider(STTProvider):
 
                 if response.status_code == 200:
                     data = response.json()
-                    transcript = data.get("transcript", "").strip()
+                    transcript = (data.get("transcript") or data.get("text") or "").strip()
+                    if not transcript and isinstance(data.get("result"), list) and len(data["result"]) > 0:
+                        first_res = data["result"][0]
+                        if isinstance(first_res, dict):
+                            transcript = (first_res.get("transcript") or first_res.get("text") or "").strip()
                     detected_lang = data.get("detected_language_code")
                     logger.info(
                         f"[Gnani STT] Transcription Success: '{transcript}' "

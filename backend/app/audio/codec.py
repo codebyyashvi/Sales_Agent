@@ -45,13 +45,32 @@ def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 8000, channels: int = 1, wid
 def wav_to_pcm(wav_bytes: bytes) -> Tuple[bytes, int, int, int]:
     """
     Extract raw PCM frames and format metadata (sample_rate, channels, sampwidth) from a WAV container.
+
+    Handles Gnani TTS WAV files that use a streaming/unknown size header
+    (RIFF chunk size = 0xFFFFFFFF). Python's wave module misreports nframes
+    as 2^31-1 in that case, so we compute the actual PCM size from the file
+    size minus the 44-byte standard WAV header when this is detected.
     """
     buffer = io.BytesIO(wav_bytes)
     with wave.open(buffer, 'rb') as wf:
         channels = wf.getnchannels()
         sampwidth = wf.getsampwidth()
         framerate = wf.getframerate()
-        frames = wf.readframes(wf.getnframes())
+        reported_frames = wf.getnframes()
+
+        # Detect streaming WAV header: RIFF/data chunk size = 0xFFFFFFFF
+        # In that case, compute actual frames from actual byte length
+        MAX_WAVE_SIZE = 0x7FFFFFFF  # 2^31 - 1, what wave module reports for 0xFFFFFFFF
+        if reported_frames >= MAX_WAVE_SIZE:
+            # Skip the standard 44-byte WAV header and treat rest as raw PCM
+            header_size = 44
+            pcm_data = wav_bytes[header_size:]
+            bytes_per_frame = sampwidth * channels
+            actual_frames = len(pcm_data) // bytes_per_frame
+            frames = pcm_data[:actual_frames * bytes_per_frame]
+        else:
+            frames = wf.readframes(reported_frames)
+
         return frames, framerate, channels, sampwidth
 
 def base64_to_mulaw(payload: str) -> bytes:

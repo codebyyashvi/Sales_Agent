@@ -25,12 +25,12 @@ def test_silence_detector_full_lifecycle():
     assert status == "NONE"
     assert audio is None
 
-    # 2. Feed speech frames (onset requires 2 consecutive frames)
-    status1, _, _ = detector.process_frame(speech_chunk)
-    assert status1 == "NONE"  # Frame 1
-
-    status2, _, _ = detector.process_frame(speech_chunk)
-    assert status2 == "SPEECH_STARTED"  # Frame 2 triggers onset!
+    # 2. Feed speech frames (onset requires 4 consecutive frames to filter line clicks)
+    assert detector.process_frame(speech_chunk)[0] == "NONE"  # Frame 1
+    assert detector.process_frame(speech_chunk)[0] == "NONE"  # Frame 2
+    assert detector.process_frame(speech_chunk)[0] == "NONE"  # Frame 3
+    status4, _, _ = detector.process_frame(speech_chunk)
+    assert status4 == "SPEECH_STARTED"  # Frame 4 triggers onset!
 
     # 3. Speech continuing
     for _ in range(5):

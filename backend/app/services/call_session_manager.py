@@ -35,6 +35,7 @@ class CallSession:
         self.messages: List[Dict[str, Any]] = []
         
         self.is_speaking: bool = False
+        self.greeting_completed: bool = False
         self.last_audio_timestamp: float = time.time()
         self.active_tts_task: Optional[Any] = None
 
@@ -203,13 +204,28 @@ async def load_session_profiles(session: CallSession):
             if cust:
                 session.customer_data = cust
         if not session.agent_data and session.agent_id:
-            agent = await db.agents.find_one({"agent_id": session.agent_id}, {"_id": 0})
+            # Match by agent_id or name
+            agent = await db.agents.find_one({
+                "$or": [
+                    {"agent_id": session.agent_id},
+                    {"name": session.agent_id}
+                ]
+            }, {"_id": 0})
             if agent:
                 session.agent_data = agent
         if not session.agent_data and not session.product_data and session.product_id:
             prod = await db.products.find_one({"product_id": session.product_id}, {"_id": 0})
             if prod:
                 session.product_data = prod
+
+        # Fallback to the first configured agent if no agent profile attached
+        if not session.agent_data and not session.product_data:
+            first_agent = await db.agents.find_one({}, {"_id": 0})
+            if first_agent:
+                session.agent_data = first_agent
+                if not session.agent_id:
+                    session.agent_id = first_agent.get("agent_id")
+                logger.info(f"Loaded default agent profile '{first_agent.get('name')}' for call {session.call_id}")
 
     if not session.agent_data and session.product_data:
         session.agent_data = agent_from_product(session.product_data)

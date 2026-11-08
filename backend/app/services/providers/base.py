@@ -47,7 +47,8 @@ class LLMProvider(ABC):
         self,
         messages: List[Dict[str, str]],
         system_prompt: str,
-        temperature: float = 0.6
+        temperature: float = 0.6,
+        agent_profile: Optional[Dict[str, Any]] = None
     ) -> LLMResponse:
         """Generate conversational reply for the sales call."""
         pass

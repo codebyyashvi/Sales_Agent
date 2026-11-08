@@ -17,7 +17,7 @@ class SilenceDetector:
         self,
         silence_threshold_ms: int = 2000,
         min_utterance_ms: int = 300,
-        energy_threshold: int = 400,
+        energy_threshold: int = 300,
         sample_rate: int = 8000
     ):
         self.silence_threshold_ms = silence_threshold_ms
@@ -28,7 +28,7 @@ class SilenceDetector:
         self.buffer = AudioUtteranceBuffer(sample_rate=sample_rate)
         self.is_speech_active = False
         self.consecutive_speech_frames = 0
-        self.required_speech_frames = 2  # ~40ms of speech to confirm onset
+        self.required_speech_frames = 4  # ~80ms of speech to confirm onset (filters clicks/line noise)
         self.last_speech_time: Optional[float] = None
         self.utterance_start_time: Optional[float] = None
 

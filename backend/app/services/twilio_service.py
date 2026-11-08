@@ -2,7 +2,7 @@ import logging
 import urllib.parse
 from typing import Optional, Dict, Any
 from twilio.rest import Client
-from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
+from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Pause
 from app.config import settings
 
 logger = logging.getLogger("sales_agent.twilio")
@@ -31,12 +31,23 @@ class TwilioService:
     ) -> str:
         """
         Generate TwiML response instructing Twilio to initiate bidirectional Media Stream.
+        A brief pause is added before the stream so the WebSocket has time to open and the
+        agent's TTS greeting can be synthesized before the customer expects to hear anything.
         """
         response = VoiceResponse()
+        # Give the WebSocket and TTS pipeline ~1s to initialize before the customer notices silence
+        response.pause(length=1)
         connect = Connect()
+        clean_host = (
+            host.replace("http://", "")
+            .replace("https://", "")
+            .replace("ws://", "")
+            .replace("wss://", "")
+            .strip("/")
+        )
         protocol = "wss" if is_secure else "ws"
         # Twilio stream URL
-        stream_url = f"{protocol}://{host}/ws/twilio-media"
+        stream_url = f"{protocol}://{clean_host}/ws/twilio-media"
         
         stream = Stream(url=stream_url)
         # Pass custom parameters to stream start event

@@ -1,13 +1,17 @@
 import uuid
 import time
+import asyncio
 import logging
+import urllib.parse
+import httpx
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Request, Response, Query
 from app.schemas.call import CallStartRequest, CallStartResponse, CallDetail
 from app.services.call_session_manager import session_manager
 from app.services.twilio_service import twilio_service
-from app.services.conversation_service import agent_from_product
-from app.websocket.twilio_stream import broadcast_to_dashboards
+from app.services.conversation_service import agent_from_product, conversation_service
+from app.services.providers import get_tts_provider
+from app.websocket.twilio_stream import broadcast_to_dashboards, synthesize_for_agent
 from app.database import get_db
 from app.config import settings
 
@@ -16,6 +20,34 @@ router = APIRouter()
 
 # Rate limiting map: phone -> last_called_timestamp
 recent_calls = {}
+
+async def get_live_public_url(request: Request) -> str:
+    """
+    Auto-detect the live public HTTPS URL from local ngrok (http://127.0.0.1:4040/api/tunnels).
+    If ngrok is running, this guarantees that Twilio webhooks always point to the active tunnel,
+    even when ngrok is restarted with a new random domain.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=0.8) as client:
+            resp = await client.get("http://127.0.0.1:4040/api/tunnels")
+            if resp.status_code == 200:
+                tunnels = resp.json().get("tunnels", [])
+                for t in tunnels:
+                    url = t.get("public_url", "")
+                    if url.startswith("https://"):
+                        return url.rstrip("/")
+                if tunnels and tunnels[0].get("public_url"):
+                    return tunnels[0]["public_url"].rstrip("/")
+    except Exception:
+        pass
+
+    public_url = (settings.PUBLIC_BASE_URL or "").strip().rstrip("/")
+    if public_url:
+        return public_url
+
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host", "localhost:8000")
+    protocol = "https" if ("https" in str(request.url) or request.headers.get("x-forwarded-proto") == "https") else "http"
+    return f"{protocol}://{host}"
 
 @router.post("/api/calls/start", response_model=CallStartResponse)
 async def start_call(payload: CallStartRequest, request: Request):
@@ -84,6 +116,23 @@ async def start_call(payload: CallStartRequest, request: Request):
     session.product_data = product_data
     session.agent_data = agent_data
 
+    # Pre-synthesize the greeting while the phone is ringing so speech starts with zero latency
+    async def _precompute_greeting():
+        try:
+            tts = get_tts_provider()
+            greeting = await conversation_service.get_initial_greeting(
+                session.customer_data, session.agent_data
+            )
+            session.precomputed_greeting_text = greeting
+            tts_res = await synthesize_for_agent(tts, greeting, session)
+            if tts_res.wav_bytes:
+                session.precomputed_greeting_wav = tts_res.wav_bytes
+                logger.info(f"Precomputed greeting audio ({len(tts_res.wav_bytes)} bytes) for call {call_id}")
+        except Exception as e:
+            logger.warning(f"Could not precompute greeting: {e}")
+
+    asyncio.create_task(_precompute_greeting())
+
     # Check if this is a browser test call or a real Twilio telephony call
     if is_browser_call:
         logger.info(f"Initialized browser voice call session {call_id}")
@@ -97,10 +146,24 @@ async def start_call(payload: CallStartRequest, request: Request):
         )
 
     # Twilio outbound call
-    # Determine public host for webhook
-    host = request.headers.get("host", "localhost:8000")
-    protocol = "https" if "https" in str(request.url) else "http"
-    public_url = settings.PUBLIC_BASE_URL or f"{protocol}://{host}"
+    # Determine public host for webhook (auto-detects live ngrok tunnel)
+    public_url = await get_live_public_url(request)
+
+    # Validate that public_url is accessible to Twilio over the internet
+    if "127.0.0.1" in public_url or "localhost" in public_url:
+        err_msg = (
+            f"Cannot connect Twilio to local address '{public_url}'. Twilio cloud servers require a public HTTPS URL. "
+            "Please start an ngrok tunnel (run: 'ngrok http 8000'), copy the Forwarding URL (e.g. https://xxxx.ngrok-free.app), "
+            "and set PUBLIC_BASE_URL in your .env file. (Note: http://127.0.0.1:4040 is only ngrok's local inspection UI)."
+        )
+        logger.error(f"[Call Start Error] {err_msg}")
+        return CallStartResponse(
+            call_id=call_id,
+            call_sid=None,
+            status="failed",
+            message=err_msg,
+            created_at=time.strftime("%Y-%m-%d %H:%M:%S")
+        )
 
     logger.info(f"Triggering Twilio call to {phone} via base url {public_url}...")
     res = twilio_service.initiate_call(
@@ -158,9 +221,11 @@ async def twilio_voice_webhook(
     Returns TwiML instructing Twilio to establish bidirectional Media Stream
     with our /ws/twilio-media WebSocket.
     """
-    host = request.headers.get("host", f"{settings.SERVER_HOST}:{settings.SERVER_PORT}")
-    # Check if HTTPS / WSS
-    is_secure = "https" in str(request.base_url) or "ngrok" in host
+    # Determine public host for WebSocket stream URL (auto-detects live ngrok or configured base)
+    public_base = await get_live_public_url(request)
+    parsed = urllib.parse.urlparse(public_base if "://" in public_base else f"https://{public_base}")
+    host = parsed.netloc or parsed.path
+    is_secure = parsed.scheme == "https"
     
     # If call_id was not in query, generate or check params
     cid = call_id or f"call_{uuid.uuid4().hex[:8]}"

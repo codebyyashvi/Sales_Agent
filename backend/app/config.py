@@ -29,7 +29,9 @@ class Settings(BaseSettings):
     GNANI_TTS_LANGUAGE: str = Field(default="en-IN", description="Gnani TTS Language")
 
     # LLM Settings
-    LLM_PROVIDER: str = Field(default="azure_openai", description="azure_openai, openai, or mock")
+    LLM_PROVIDER: str = Field(default="auto", description="auto, groq, openai, azure_openai, or mock")
+    GROQ_API_KEY: str = Field(default="", description="Groq API Key (gsk_...)")
+    GROQ_MODEL: str = Field(default="llama-3.1-8b-instant", description="Groq Model Name")
     OPEN_AI_DEPLOYMENT_NAME: str = Field(default="gpt-4o-mini", description="Azure OpenAI Deployment Name")
     OPEN_AI_ENDPOINT: str = Field(default="", description="Azure OpenAI Endpoint")
     OPEN_AI_KEY: str = Field(default="", description="Azure OpenAI Key")
@@ -43,8 +45,8 @@ class Settings(BaseSettings):
 
     # Voice / Audio Pipeline
     SILENCE_THRESHOLD_MS: int = Field(default=2000, description="Silence duration in ms to finalize utterance")
-    MIN_UTTERANCE_MS: int = Field(default=350, description="Minimum audio duration in ms to treat as speech")
-    VAD_ENERGY_THRESHOLD: int = Field(default=400, description="RMS threshold to classify audio as voice activity")
+    MIN_UTTERANCE_MS: int = Field(default=300, description="Minimum audio duration in ms to treat as speech")
+    VAD_ENERGY_THRESHOLD: int = Field(default=300, description="RMS threshold to classify audio as voice activity")
     AUDIO_SAMPLE_RATE: int = Field(default=8000, description="Native phone sample rate in Hz")
 
     # Server & Webhook
