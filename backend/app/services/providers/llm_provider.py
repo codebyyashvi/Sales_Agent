@@ -89,10 +89,20 @@ class AgentAwareSalesEngine:
         call_objective = ctx["call_objective"]
         closing = ctx["closing"]
 
+        # Count user turns
+        user_messages = [m for m in messages if m.get("role") == "user"]
+        user_turn_count = len(user_messages)
+
         last_user_msg = ""
         for m in reversed(messages):
             if m.get("role") == "user":
                 last_user_msg = m.get("content", "").lower().strip()
+                break
+
+        prev_assistant_msg = ""
+        for m in reversed(messages):
+            if m.get("role") == "assistant":
+                prev_assistant_msg = m.get("content", "").lower().strip()
                 break
 
         raw_tokens = set(re.findall(r"\w+", last_user_msg))
@@ -121,7 +131,18 @@ class AgentAwareSalesEngine:
         if any(w in last_user_msg for w in ["who is this", "who are you", "what company", "who am i speaking", "why are you calling"]):
             return f"Hi! I'm {persona} calling from {company}. We help customers with {product} — {description[:120]}... Do you have a quick moment?"
 
-        # 5. Pricing & Cost Queries
+        # 5. Confirmation to send details/link (if assistant previously offered to send link or details)
+        if any(w in prev_assistant_msg for w in ["send the details", "send details", "share the signup link", "share details", "send the link", "to your number", "shall i proceed"]):
+            if any(w in last_user_msg for w in ["yes", "sure", "yeah", "okay", "ok", "please", "send", "proceed", "do that", "alright"]):
+                return f"Perfect! I've sent the details and link directly to your mobile number via SMS. {closing}"
+
+        # 6. Turn 1 Affirmative Response to Greeting ("Yes, I have time" / "Sure" / "Go ahead")
+        # Pitch product overview and top feature from the agent's profile, then ask if they'd like to hear about pricing or how it works.
+        if user_turn_count <= 1 and any(w in last_user_msg for w in ["yes", "sure", "yeah", "yep", "ok", "okay", "go ahead", "tell me", "listening", "fine", "what is it", "tell me more"]):
+            feature_sample = f" One of our biggest highlights is that {features[0]}." if features else ""
+            return f"Wonderful! {description}{feature_sample} Would you like to hear about our pricing and returns, or how the account works?"
+
+        # 7. Pricing & Cost Queries
         if any(w in last_user_msg for w in ["price", "pricing", "cost", "charges", "fees", "fee", "rate", "interest", "returns"]):
             if pricing:
                 offer_txt = f" Plus, we currently have: {offers}." if offers else ""
@@ -129,7 +150,7 @@ class AgentAwareSalesEngine:
             elif features:
                 return f"With {product}, you get {features[0]}. There are no hidden fees. Shall I share more details?"
 
-        # 6. FAQs Matching (Score by content keyword overlap)
+        # 8. FAQs Matching (Score by content keyword overlap)
         best_faq = None
         best_faq_score = 0
         for faq in faqs:
@@ -145,9 +166,9 @@ class AgentAwareSalesEngine:
 
         if best_faq and best_faq.get("a"):
             ans = best_faq["a"].strip()
-            return f"{ans} Would you like to know more about how {product} works?"
+            return f"{ans} Would you like to know more about how {product} works, or see how to get started?"
 
-        # 7. Objections Handling (Match against approved rebuttals)
+        # 9. Objections Handling (Match against approved rebuttals)
         best_obj = None
         best_obj_score = 0
         for obj in objections:
@@ -165,26 +186,25 @@ class AgentAwareSalesEngine:
             resp = best_obj["response"].strip()
             return f"{resp} Does that address your concern?"
 
-        # 8. Product Overview / Features / "How does it work?"
+        # 10. Product Overview / Features / "How does it work?"
         if any(w in last_user_msg for w in ["what is", "tell me more", "how does it work", "features", "details", "explain", "benefit", "what do you do", "main features"]):
             feature_sample = f" Key highlights include {features[0]}." if features else ""
             return f"{description}{feature_sample} Would you like to hear about our key benefits or pricing?"
 
-        # 9. Buying Intent / Agreement / "Yes" / "Sounds good"
-        if any(w in last_user_msg for w in ["yes", "sounds good", "interested", "sure", "okay", "sign up", "open account", "proceed", "send link", "lets do it"]):
+        # 11. Buying Intent / Agreement / "Sign up" / "Open account"
+        if any(w in last_user_msg for w in ["sign up", "open account", "proceed", "send link", "lets do it", "how to join", "join", "get started", "sounds good", "interested", "yes", "sure", "okay"]):
             if call_objective:
                 obj_clean = call_objective.strip().rstrip(".")
                 if obj_clean.lower().startswith("get the customer to "):
                     obj_clean = "We can " + obj_clean[20:]
                 return f"Wonderful! {obj_clean}. Would you like me to send the details directly to your number?"
             return f"Wonderful! I can share the signup link for {product} with you right away. Shall I proceed?"
-            return f"Wonderful! I can share the signup link for {product} with you right away. Shall I proceed?"
 
-        # 9. Greeting / Identity Check / "Who is this?"
+        # 12. Greeting / Identity Check / "Who is this?"
         if any(w in last_user_msg for w in ["who is this", "who are you", "what company", "hello", "hi"]):
             return f"Hi! I'm {persona} calling from {company}. We help customers with {product} — {description[:120]}... Do you have a quick moment?"
 
-        # 10. Contextual Fallback incorporating agent knowledge
+        # 13. Contextual Fallback incorporating agent knowledge
         if features:
             f_txt = features[0]
             return f"With {product}, one of the biggest advantages is that you get {f_txt}. How does that align with what you're looking for?"

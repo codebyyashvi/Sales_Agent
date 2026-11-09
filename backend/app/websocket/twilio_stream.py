@@ -61,12 +61,13 @@ async def stream_audio_to_twilio(
     stream_sid: str,
     wav_bytes: bytes,
     session: CallSession,
-    is_greeting: bool = False
+    is_greeting: bool = False,
+    silence_detector: Optional[SilenceDetector] = None
 ):
     """
-    Stream synthesized audio to Twilio Media Stream in standard 20ms chunks.
-    Monitors session.is_speaking for barge-in / interruption cancellations.
-    Greeting audio is protected from interruptions so the agent introduces itself completely.
+    Stream synthesized audio to Twilio Media Stream.
+    Uses 80ms chunks (640 bytes of 8kHz mu-law) and maintains a 400ms jitter buffer lead
+    ahead of wall-clock playback to guarantee 100% continuous, fluid voice with zero cutting or stops.
     """
     if not wav_bytes:
         return
@@ -84,20 +85,36 @@ async def stream_audio_to_twilio(
         logger.error(f"Error parsing TTS WAV for Twilio streaming: {e}")
         return
 
+    if not mulaw_audio:
+        return
+
     session.is_speaking = True
     session.playback_started_at = time.time()
-    chunk_size = 160  # 160 bytes of 8kHz mu-law audio = 20ms
-    delay = 0.020     # 20ms pacing
 
-    logger.info(f"[Twilio Audio Out] Streaming {len(mulaw_audio)} bytes audio to stream {stream_sid} (greeting={is_greeting})")
+    # 640 bytes = 80ms of 8000 Hz mu-law audio
+    # 80ms chunks provide optimal balance: smooth continuous audio without network packet starvation
+    chunk_size = 640
+    chunk_duration = chunk_size / 8000.0  # 0.080s
+    total_audio_duration = len(mulaw_audio) / 8000.0
+    total_chunks = (len(mulaw_audio) + chunk_size - 1) // chunk_size
+
+    logger.info(
+        f"[Twilio Audio Out] Streaming {total_audio_duration:.2f}s audio ({len(mulaw_audio)} bytes, "
+        f"{total_chunks} chunks) to stream {stream_sid} (greeting={is_greeting})"
+    )
+
+    start_stream_time = time.perf_counter()
+    # Maintain a 400ms buffer lead in Twilio's playback queue so the speaker never starves
+    BUFFER_LEAD_SEC = 0.40
 
     try:
-        for i in range(0, len(mulaw_audio), chunk_size):
-            if not is_greeting and not session.is_speaking:
-                logger.info(f"[Twilio Audio Out] Audio streaming cancelled by barge-in for stream {stream_sid}")
+        for chunk_idx in range(total_chunks):
+            if not session.is_speaking:
+                logger.info(f"[Twilio Audio Out] Audio streaming cancelled for stream {stream_sid}")
                 break
 
-            chunk = mulaw_audio[i:i + chunk_size]
+            offset = chunk_idx * chunk_size
+            chunk = mulaw_audio[offset:offset + chunk_size]
             b64_chunk = mulaw_to_base64(chunk)
 
             media_msg = {
@@ -108,12 +125,28 @@ async def stream_audio_to_twilio(
                 }
             }
             await ws.send_text(json.dumps(media_msg))
-            await asyncio.sleep(delay)
+
+            # Pace audio so Twilio's buffer always stays ~400ms ahead of real-time playback
+            audio_sent_so_far = (chunk_idx + 1) * chunk_duration
+            target_elapsed = audio_sent_so_far - BUFFER_LEAD_SEC
+            if target_elapsed > 0:
+                target_wall_time = start_stream_time + target_elapsed
+                sleep_duration = target_wall_time - time.perf_counter()
+                if sleep_duration > 0.005:
+                    await asyncio.sleep(sleep_duration)
+
+        # Wait for the remaining buffered audio to finish playing on the phone before opening the mic
+        time_already_elapsed = time.perf_counter() - start_stream_time
+        remaining_playback = total_audio_duration - time_already_elapsed
+        if remaining_playback > 0:
+            await asyncio.sleep(remaining_playback + 0.15)
 
     except Exception as e:
         logger.warning(f"Error while sending audio to Twilio: {e}")
     finally:
         session.is_speaking = False
+        if silence_detector:
+            silence_detector.reset()
         if is_greeting:
             session.greeting_completed = True
             logger.info(f"[Twilio WS] Agent finished introducing itself on stream {stream_sid}. Ready for customer response.")
@@ -204,7 +237,7 @@ async def handle_twilio_media_stream(websocket: WebSocket):
 
                 if wav_bytes:
                     playback_task = asyncio.create_task(
-                        stream_audio_to_twilio(websocket, stream_sid, wav_bytes, session, is_greeting=True)
+                        stream_audio_to_twilio(websocket, stream_sid, wav_bytes, session, is_greeting=True, silence_detector=silence_detector)
                     )
 
             # 3. Media Audio Event (Customer speaking)
@@ -212,8 +245,13 @@ async def handle_twilio_media_stream(websocket: WebSocket):
                 if not session or not stream_sid:
                     continue
 
-                # Ensure agent introduces itself first: do not capture customer frames or trigger barge-in during greeting
+                # Ensure agent introduces itself first: do not capture customer frames during greeting
                 if not getattr(session, "greeting_completed", False):
+                    silence_detector.reset()
+                    continue
+
+                # While agent is speaking back to customer, ignore speaker acoustic echo so speech is never cut off
+                if getattr(session, "is_speaking", False):
                     silence_detector.reset()
                     continue
 
@@ -228,38 +266,15 @@ async def handle_twilio_media_stream(websocket: WebSocket):
                 # Send audio activity to silence detector
                 status, audio_utterance, dur_ms = silence_detector.process_frame(pcm_chunk)
 
-                # Barge-in / Interruption Detection
-                if status == "SPEECH_STARTED":
-                    playback_elapsed = time.time() - getattr(session, "playback_started_at", 0)
-                    # Ignore short pops in first 600ms of speech playback to avoid line connect false triggers
-                    if session.is_speaking and playback_elapsed > 0.6:
-                        logger.info(f"[BARGE-IN] User started speaking! Clearing audio on Twilio stream {stream_sid}")
-                        session.is_speaking = False
-                        session.metrics["interruptions_count"] += 1
-                        
-                        # Cancel active audio streaming task
-                        if playback_task and not playback_task.done():
-                            playback_task.cancel()
-
-                        # Send Twilio clear message to flush phone buffer immediately
-                        clear_msg = {
-                            "event": "clear",
-                            "streamSid": stream_sid
-                        }
-                        await websocket.send_text(json.dumps(clear_msg))
-                        await broadcast_to_dashboards("call_barge_in", {
-                            "call_id": session.call_id,
-                            "timestamp": time.time()
-                        })
-
                 # Utterance Complete after 2.0s of silence
-                elif status == "UTTERANCE_COMPLETE" and audio_utterance:
+                if status == "UTTERANCE_COMPLETE" and audio_utterance:
                     turn_start_time = time.perf_counter()
                     logger.info(f"[Twilio WS] Utterance complete ({dur_ms}ms). Sending to Gnani STT...")
 
-                    # 1. Gnani STT
+                    # 1. Gnani STT (use agent language e.g. en-IN so English is never misdetected as Hindi)
                     key_terms = session.agent_data.get("key_terms", [])
-                    stt_res = await stt.transcribe(audio_utterance, sample_rate=8000, key_terms=key_terms)
+                    stt_lang = session.agent_data.get("language") or settings.GNANI_STT_LANGUAGE or "en-IN"
+                    stt_res = await stt.transcribe(audio_utterance, sample_rate=8000, key_terms=key_terms, language=stt_lang)
                     
                     user_text = stt_res.text.strip()
                     if not user_text:
@@ -316,7 +331,7 @@ async def handle_twilio_media_stream(websocket: WebSocket):
                     # 4. Stream response audio back to customer
                     if tts_res.wav_bytes:
                         playback_task = asyncio.create_task(
-                            stream_audio_to_twilio(websocket, stream_sid, tts_res.wav_bytes, session)
+                            stream_audio_to_twilio(websocket, stream_sid, tts_res.wav_bytes, session, silence_detector=silence_detector)
                         )
 
             # 4. DTMF Keypress Event

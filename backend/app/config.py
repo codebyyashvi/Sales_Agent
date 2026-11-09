@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     GNANI_API_KEY: str = Field(default="", description="Gnani X-API-Key-ID")
     GNANI_BASE_URL: str = Field(default="https://api.vachana.ai", description="Gnani API Base URL")
     GNANI_STT_MODEL: str = Field(default="prisma-v3.0", description="Gnani STT Model")
-    GNANI_STT_LANGUAGE: str = Field(default="indic-auto", description="Gnani STT Language Code")
+    GNANI_STT_LANGUAGE: str = Field(default="en-IN", description="Gnani STT Language Code")
     GNANI_TTS_VOICE: str = Field(default="Nalini", description="Gnani TTS Voice")
     GNANI_TTS_MODEL: str = Field(default="timbre-v2.5", description="Gnani TTS Model")
     GNANI_TTS_LANGUAGE: str = Field(default="en-IN", description="Gnani TTS Language")

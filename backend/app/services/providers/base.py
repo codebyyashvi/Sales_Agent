@@ -14,7 +14,8 @@ class STTProvider(ABC):
         self,
         pcm_bytes: bytes,
         sample_rate: int = 8000,
-        key_terms: Optional[List[str]] = None
+        key_terms: Optional[List[str]] = None,
+        language: Optional[str] = None
     ) -> STTResult:
         """Transcribe raw PCM audio to text."""
         pass

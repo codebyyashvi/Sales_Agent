@@ -30,7 +30,8 @@ class GnaniSTTProvider(STTProvider):
         self,
         pcm_bytes: bytes,
         sample_rate: int = 8000,
-        key_terms: Optional[List[str]] = None
+        key_terms: Optional[List[str]] = None,
+        language: Optional[str] = None
     ) -> STTResult:
         if not pcm_bytes:
             return STTResult(text="", latency_ms=0.0)
@@ -44,9 +45,10 @@ class GnaniSTTProvider(STTProvider):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AntigravitySalesVoice/1.0"
         }
 
+        lang_code = language or self.language or "en-IN"
         form_data = {
             "model": self.model,
-            "language_code": self.language
+            "language_code": lang_code
         }
         
         # Add key_terms if provided to boost domain & product recognition

@@ -1,5 +1,6 @@
 import os
 import logging
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, WebSocket
@@ -23,10 +24,23 @@ logger = logging.getLogger("sales_agent.main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up AI Sales Calling Agent server...")
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.winmm.timeBeginPeriod(1)
+            logger.info("Enabled Windows 1ms high-precision multimedia timer.")
+        except Exception as e:
+            logger.warning(f"Could not enable Windows high-precision timer: {e}")
     await connect_db()
     yield
     logger.info("Shutting down AI Sales Calling Agent server...")
     await close_db()
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.winmm.timeEndPeriod(1)
+        except Exception:
+            pass
 
 app = FastAPI(
     title="Real-Time AI Voice Sales Agent",

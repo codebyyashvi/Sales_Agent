@@ -62,9 +62,13 @@ def wav_to_pcm(wav_bytes: bytes) -> Tuple[bytes, int, int, int]:
         # In that case, compute actual frames from actual byte length
         MAX_WAVE_SIZE = 0x7FFFFFFF  # 2^31 - 1, what wave module reports for 0xFFFFFFFF
         if reported_frames >= MAX_WAVE_SIZE:
-            # Skip the standard 44-byte WAV header and treat rest as raw PCM
-            header_size = 44
-            pcm_data = wav_bytes[header_size:]
+            # Find the exact start of audio data following 'data' chunk header (4 bytes tag + 4 bytes length)
+            data_tag_idx = wav_bytes.find(b'data')
+            if data_tag_idx != -1:
+                pcm_start = data_tag_idx + 8
+            else:
+                pcm_start = 44
+            pcm_data = wav_bytes[pcm_start:]
             bytes_per_frame = sampwidth * channels
             actual_frames = len(pcm_data) // bytes_per_frame
             frames = pcm_data[:actual_frames * bytes_per_frame]
