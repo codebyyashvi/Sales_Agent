@@ -266,7 +266,7 @@ async def handle_twilio_media_stream(websocket: WebSocket):
                 # Send audio activity to silence detector
                 status, audio_utterance, dur_ms = silence_detector.process_frame(pcm_chunk)
 
-                # Utterance Complete after 2.0s of silence
+                # Utterance Complete after 1.0s of silence
                 if status == "UTTERANCE_COMPLETE" and audio_utterance:
                     turn_start_time = time.perf_counter()
                     logger.info(f"[Twilio WS] Utterance complete ({dur_ms}ms). Sending to Gnani STT...")

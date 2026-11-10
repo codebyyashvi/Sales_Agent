@@ -11,11 +11,11 @@ class SilenceDetector:
     Real-time Voice Activity and Silence Detector.
     Tracks audio energy over streaming PCM chunks, manages speech onset,
     maintains audio buffering, and triggers an utterance completion event
-    precisely after 2000ms of sustained post-speech silence.
+    precisely after 1000ms of sustained post-speech silence.
     """
     def __init__(
         self,
-        silence_threshold_ms: int = 2000,
+        silence_threshold_ms: int = 1000,
         min_utterance_ms: int = 300,
         energy_threshold: int = 300,
         sample_rate: int = 8000

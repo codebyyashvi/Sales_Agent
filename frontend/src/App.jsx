@@ -183,7 +183,20 @@ function App() {
       setCallState('INTRO')
       startCallTimer()
     } else if (type === 'transcript_update') {
-      setTranscript((prev) => [...prev, data.message])
+      if (!data?.message) return
+      setTranscript((prev) => {
+        const msg = data.message
+        if (msg.id && prev.some((m) => m.id === msg.id)) {
+          return prev
+        }
+        if (prev.length > 0) {
+          const last = prev[prev.length - 1]
+          if (last.role === msg.role && last.text === msg.text) {
+            return prev
+          }
+        }
+        return [...prev, msg]
+      })
     } else if (type === 'state_update') {
       if (data.state) setCallState(data.state)
       if (data.metrics) setMetrics((prev) => ({ ...prev, ...data.metrics }))
@@ -827,7 +840,7 @@ function App() {
                   <div className="flex items-center justify-between text-xs text-gray-400 mb-2">
                     <span className="flex items-center space-x-1.5">
                       <Activity className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Audio Stream Energy &bull; 2.0s Silence VAD Window</span>
+                      <span>Audio Stream Energy &bull; 1.0s Silence VAD Window</span>
                     </span>
                     <span className="font-mono text-emerald-400">μ-law 8kHz Full-Duplex</span>
                   </div>

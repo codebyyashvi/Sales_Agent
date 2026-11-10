@@ -127,37 +127,32 @@ class AgentAwareSalesEngine:
         if any(w in last_user_msg for w in ["busy", "call later", "not right now", "driving", "meeting", "call me back"]):
             return f"I completely understand. When would be a more convenient time to reach you regarding {product}?"
 
-        # 4. Identity / Greeting / "Who is this?"
+        # 4. Identity / Greeting / "Who is this?" / "Who are you?"
         if any(w in last_user_msg for w in ["who is this", "who are you", "what company", "who am i speaking", "why are you calling"]):
-            return f"Hi! I'm {persona} calling from {company}. We help customers with {product} — {description[:120]}... Do you have a quick moment?"
+            return f"Hi! I'm {persona} calling from {company}. We assist customers with {product} — {description[:130]}... How can I help you today?"
 
-        # 5. Confirmation to send details/link (if assistant previously offered to send link or details)
-        if any(w in prev_assistant_msg for w in ["send the details", "send details", "share the signup link", "share details", "send the link", "to your number", "shall i proceed"]):
-            if any(w in last_user_msg for w in ["yes", "sure", "yeah", "okay", "ok", "please", "send", "proceed", "do that", "alright"]):
-                return f"Perfect! I've sent the details and link directly to your mobile number via SMS. {closing}"
-
-        # 6. Turn 1 Affirmative Response to Greeting ("Yes, I have time" / "Sure" / "Go ahead")
-        # Pitch product overview and top feature from the agent's profile, then ask if they'd like to hear about pricing or how it works.
+        # 5. Turn 1 Affirmative Response to Greeting ("Yes, I have time" / "Sure" / "Go ahead")
+        # Give friendly overview and invite their specific questions
         if user_turn_count <= 1 and any(w in last_user_msg for w in ["yes", "sure", "yeah", "yep", "ok", "okay", "go ahead", "tell me", "listening", "fine", "what is it", "tell me more"]):
-            feature_sample = f" One of our biggest highlights is that {features[0]}." if features else ""
-            return f"Wonderful! {description}{feature_sample} Would you like to hear about our pricing and returns, or how the account works?"
+            feature_sample = f" One of the biggest highlights is that {features[0]}." if features else ""
+            return f"Great! {description}{feature_sample} What questions can I answer for you about {product}?"
 
-        # 7. Pricing & Cost Queries
-        if any(w in last_user_msg for w in ["price", "pricing", "cost", "charges", "fees", "fee", "rate", "interest", "returns"]):
+        # 6. Pricing & Cost Queries
+        if any(w in last_user_msg for w in ["price", "pricing", "cost", "charges", "fees", "fee", "rate", "how much"]):
             if pricing:
                 offer_txt = f" Plus, we currently have: {offers}." if offers else ""
-                return f"With {product}, {pricing}.{offer_txt} Would you like me to help you get started?"
+                return f"With {product}, the price is {pricing}.{offer_txt} What other details would you like to know?"
             elif features:
-                return f"With {product}, you get {features[0]}. There are no hidden fees. Shall I share more details?"
+                return f"With {product}, you get {features[0]}. There are no hidden fees. Would you like to hear about other specifications?"
 
-        # 8. FAQs Matching (Score by content keyword overlap)
+        # 7. FAQs Matching (Score by content keyword overlap)
         best_faq = None
         best_faq_score = 0
         for faq in faqs:
             q_text = faq.get("q", "").lower()
             q_content_tokens = set(re.findall(r"\w+", q_text)) - stop_words
             overlap = len(content_tokens.intersection(q_content_tokens))
-            for kw in ["safe", "safety", "secure", "security", "minimum", "deposit", "rbi", "dicgc", "licence", "guarantee"]:
+            for kw in ["camera", "battery", "display", "processor", "ram", "storage", "5g", "warranty", "safe", "safety", "secure"]:
                 if kw in content_tokens and kw in q_content_tokens:
                     overlap += 3
             if overlap > best_faq_score and overlap >= 1:
@@ -166,16 +161,16 @@ class AgentAwareSalesEngine:
 
         if best_faq and best_faq.get("a"):
             ans = best_faq["a"].strip()
-            return f"{ans} Would you like to know more about how {product} works, or see how to get started?"
+            return f"{ans} What else would you like to know about {product}?"
 
-        # 9. Objections Handling (Match against approved rebuttals)
+        # 8. Objections Handling (Match against approved rebuttals)
         best_obj = None
         best_obj_score = 0
         for obj in objections:
             obj_text = obj.get("objection", "").lower()
             obj_content_tokens = set(re.findall(r"\w+", obj_text)) - stop_words
             overlap = len(content_tokens.intersection(obj_content_tokens))
-            for kw in ["expensive", "costly", "already", "bank", "account", "competitor", "trust"]:
+            for kw in ["expensive", "costly", "already", "competitor", "trust", "alternative"]:
                 if kw in content_tokens and kw in obj_content_tokens:
                     overlap += 3
             if overlap > best_obj_score and overlap >= 1:
@@ -184,32 +179,25 @@ class AgentAwareSalesEngine:
 
         if best_obj and best_obj.get("response"):
             resp = best_obj["response"].strip()
-            return f"{resp} Does that address your concern?"
+            return f"{resp} Does that help answer your question?"
 
-        # 10. Product Overview / Features / "How does it work?"
-        if any(w in last_user_msg for w in ["what is", "tell me more", "how does it work", "features", "details", "explain", "benefit", "what do you do", "main features"]):
+        # 9. Product Overview / Features / "How does it work?"
+        if any(w in last_user_msg for w in ["what is", "tell me more", "how does it work", "features", "details", "explain", "benefit", "specs", "specifications", "main features"]):
             feature_sample = f" Key highlights include {features[0]}." if features else ""
-            return f"{description}{feature_sample} Would you like to hear about our key benefits or pricing?"
+            return f"{description}{feature_sample} Would you like to hear about its camera, performance, or pricing?"
 
-        # 11. Buying Intent / Agreement / "Sign up" / "Open account"
-        if any(w in last_user_msg for w in ["sign up", "open account", "proceed", "send link", "lets do it", "how to join", "join", "get started", "sounds good", "interested", "yes", "sure", "okay"]):
-            if call_objective:
-                obj_clean = call_objective.strip().rstrip(".")
-                if obj_clean.lower().startswith("get the customer to "):
-                    obj_clean = "We can " + obj_clean[20:]
-                return f"Wonderful! {obj_clean}. Would you like me to send the details directly to your number?"
-            return f"Wonderful! I can share the signup link for {product} with you right away. Shall I proceed?"
+        # 10. Affirmative / Interest / Customer agrees or says "yeah sure" / "okay"
+        if any(w in last_user_msg for w in ["yes", "sure", "yeah", "okay", "ok", "sounds good", "interested", "alright", "tell me"]):
+            if features and len(features) > 1:
+                return f"Awesome! Another great feature is that {features[1]}. What specific details can I help you with?"
+            return f"Glad to hear that! What questions can I answer for you about {product}?"
 
-        # 12. Greeting / Identity Check / "Who is this?"
-        if any(w in last_user_msg for w in ["who is this", "who are you", "what company", "hello", "hi"]):
-            return f"Hi! I'm {persona} calling from {company}. We help customers with {product} — {description[:120]}... Do you have a quick moment?"
-
-        # 13. Contextual Fallback incorporating agent knowledge
+        # 11. Contextual Fallback incorporating agent knowledge
         if features:
             f_txt = features[0]
-            return f"With {product}, one of the biggest advantages is that you get {f_txt}. How does that align with what you're looking for?"
+            return f"With {product}, one of the standout features is {f_txt}. How can I assist you with more details?"
 
-        return f"With {product}, our goal is to {call_objective.lower() if call_objective else 'give you the best value'}. What questions can I answer for you about {product}?"
+        return f"I'm here to assist you with any questions or support regarding {product}. What would you like to know?"
 
 
 class AzureOpenAIProvider(LLMProvider):
@@ -273,19 +261,27 @@ class AzureOpenAIProvider(LLMProvider):
 
         # 1. Attempt Groq (Ultra-fast voice LLM, matches Node.js workflowCall.js)
         if self.groq_client:
-            try:
-                chat_completion = await self.groq_client.chat.completions.create(
-                    model=self.groq_model,
-                    temperature=temperature,
-                    max_tokens=150,
-                    messages=full_messages
-                )
-                reply = chat_completion.choices[0].message.content.strip()
-                latency_ms = (time.perf_counter() - start_time) * 1000
-                logger.info(f"[Groq LLM] Generated reply in {latency_ms:.1f}ms: '{reply}'")
-                return LLMResponse(content=reply, latency_ms=round(latency_ms, 2))
-            except Exception as e:
-                logger.warning(f"[Groq LLM] Request failed: {e}. Trying next provider...")
+            models_to_try = [self.groq_model, "qwen/qwen3.8-27b", "allam-2-7b"]
+            for model_name in models_to_try:
+                if not model_name:
+                    continue
+                try:
+                    chat_completion = await self.groq_client.chat.completions.create(
+                        model=model_name,
+                        temperature=temperature,
+                        max_tokens=120,
+                        messages=full_messages
+                    )
+                    reply = chat_completion.choices[0].message.content.strip()
+                    if reply:
+                        # Clean any think tags, asterisks, or markdown formatting for voice speech
+                        reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
+                        reply = reply.replace("**", "").replace("*", "").replace("#", "").strip()
+                        latency_ms = (time.perf_counter() - start_time) * 1000
+                        logger.info(f"[Groq LLM ({model_name})] Generated reply in {latency_ms:.1f}ms: '{reply}'")
+                        return LLMResponse(content=reply, latency_ms=round(latency_ms, 2))
+                except Exception as e:
+                    logger.warning(f"[Groq LLM ({model_name})] Request failed: {e}. Trying next option...")
 
         # 2. Attempt OpenAI
         if self.openai_client:
