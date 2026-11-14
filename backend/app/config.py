@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     GNANI_TTS_LANGUAGE: str = Field(default="en-IN", description="Gnani TTS Language")
 
     # LLM Settings
-    LLM_PROVIDER: str = Field(default="auto", description="auto, groq, openai, azure_openai, or mock")
+    LLM_PROVIDER: str = Field(default="groq", description="groq, openai, azure_openai, or mock")
     GROQ_API_KEY: str = Field(default="", description="Groq API Key (gsk_...)")
     GROQ_MODEL: str = Field(default="qwen/qwen3.8-27b", description="Groq Model Name")
     OPEN_AI_DEPLOYMENT_NAME: str = Field(default="gpt-4o-mini", description="Azure OpenAI Deployment Name")

@@ -200,44 +200,42 @@ class AgentAwareSalesEngine:
         return f"I'm here to assist you with any questions or support regarding {product}. What would you like to know?"
 
 
-class AzureOpenAIProvider(LLMProvider):
+class GroqLLMProvider(LLMProvider):
     """
-    Multi-Provider Voice LLM Service supporting:
-    1. Groq (llama-3.1-8b-instant) — Ultra-fast inference (<300ms) matching Node.js reference
-    2. Standard OpenAI (gpt-4o-mini)
-    3. Azure OpenAI (gpt-4o-mini)
-    4. Intelligent Agent-Aware Sales Engine Fallback (Zero downtime, fully aligned with selected agent)
+    Dedicated Groq Voice LLM Service powered by Groq Cloud ultra-fast inference (<300ms).
+    Uses high-speed conversational models (qwen/qwen3.8-27b) with instant failover
+    to AgentAwareSalesEngine for zero-downtime reliability.
     """
 
     def __init__(self):
-        # Groq client
+        # Groq client (Primary LLM Provider)
         self.groq_api_key = (settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")).strip()
-        self.groq_model = settings.GROQ_MODEL or "llama-3.1-8b-instant"
+        self.groq_model = settings.GROQ_MODEL or "qwen/qwen3.8-27b"
         self.groq_client: Optional[Any] = None
         if self.groq_api_key and AsyncGroq:
             try:
                 self.groq_client = AsyncGroq(api_key=self.groq_api_key)
-                logger.info(f"Groq client initialized for model: {self.groq_model}")
+                logger.info(f"Groq LLM client initialized successfully with model: {self.groq_model}")
             except Exception as e:
                 logger.warning(f"Could not initialize Groq client: {e}")
 
-        # OpenAI client
+        # Optional legacy OpenAI client (if valid key is provided)
         self.openai_api_key = (settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY", "")).strip()
         self.openai_client: Optional[AsyncOpenAI] = None
-        if self.openai_api_key:
+        if self.openai_api_key and settings.LLM_PROVIDER != "groq":
             try:
                 self.openai_client = AsyncOpenAI(api_key=self.openai_api_key, timeout=8.0)
                 logger.info(f"OpenAI client initialized for model: {settings.OPENAI_MODEL}")
             except Exception as e:
                 logger.warning(f"Could not initialize AsyncOpenAI: {e}")
 
-        # Azure OpenAI client
+        # Optional legacy Azure OpenAI client (disabled by default in favor of Groq)
         self.endpoint = settings.OPEN_AI_ENDPOINT.rstrip("/") if settings.OPEN_AI_ENDPOINT else ""
         self.azure_key = settings.OPEN_AI_KEY
         self.deployment = settings.OPEN_AI_DEPLOYMENT_NAME
         self.api_version = settings.OPEN_AI_API_VERSION
         self.azure_client: Optional[AsyncAzureOpenAI] = None
-        if self.endpoint and self.azure_key:
+        if self.endpoint and self.azure_key and "gapgpt" not in self.endpoint and settings.LLM_PROVIDER != "groq":
             try:
                 self.azure_client = AsyncAzureOpenAI(
                     azure_endpoint=self.endpoint,
@@ -259,7 +257,7 @@ class AzureOpenAIProvider(LLMProvider):
         start_time = time.perf_counter()
         full_messages = [{"role": "system", "content": system_prompt}] + messages
 
-        # 1. Attempt Groq (Ultra-fast voice LLM, matches Node.js workflowCall.js)
+        # 1. Primary: Groq Cloud Inference (Ultra-fast voice LLM)
         if self.groq_client:
             models_to_try = [self.groq_model, "qwen/qwen3.8-27b", "allam-2-7b"]
             for model_name in models_to_try:
@@ -283,8 +281,8 @@ class AzureOpenAIProvider(LLMProvider):
                 except Exception as e:
                     logger.warning(f"[Groq LLM ({model_name})] Request failed: {e}. Trying next option...")
 
-        # 2. Attempt OpenAI
-        if self.openai_client:
+        # 2. Secondary fallback: OpenAI (only if explicitly enabled)
+        if self.openai_client and settings.LLM_PROVIDER != "groq":
             try:
                 resp = await self.openai_client.chat.completions.create(
                     model=settings.OPENAI_MODEL,
@@ -299,33 +297,8 @@ class AzureOpenAIProvider(LLMProvider):
             except Exception as e:
                 logger.warning(f"[OpenAI] Request failed: {e}. Trying next provider...")
 
-        # 3. Attempt Azure OpenAI REST API
-        if self.endpoint and self.azure_key and "gapgpt" not in self.endpoint:
-            url = f"{self.endpoint}/openai/deployments/{self.deployment}/chat/completions?api-version={self.api_version}"
-            headers = {
-                "api-key": self.azure_key,
-                "Content-Type": "application/json"
-            }
-            body = {
-                "messages": full_messages,
-                "max_tokens": 120,
-                "temperature": temperature
-            }
-            try:
-                async with httpx.AsyncClient(timeout=6.0) as client:
-                    resp = await client.post(url, json=body, headers=headers)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        reply = data["choices"][0]["message"]["content"].strip()
-                        latency_ms = (time.perf_counter() - start_time) * 1000
-                        logger.info(f"[Azure OpenAI] Generated reply in {latency_ms:.1f}ms: '{reply}'")
-                        return LLMResponse(content=reply, latency_ms=round(latency_ms, 2))
-            except Exception as e:
-                logger.warning(f"[Azure OpenAI] Request failed: {e}")
-
-        # 4. Intelligent Agent-Aware Sales Engine Fallback
-        # Dynamically uses the selected agent's description, features, pricing, FAQs, and objections
-        logger.info("[LLM] Executing Intelligent Agent-Aware Sales Engine")
+        # 3. Third fallback: Intelligent Agent-Aware Sales Engine (Zero downtime, sub-millisecond)
+        logger.info("[LLM] Executing Intelligent Agent-Aware Sales Engine Fallback")
         reply = AgentAwareSalesEngine.generate_reply(messages, system_prompt, agent_profile=agent_profile)
         latency_ms = (time.perf_counter() - start_time) * 1000
         return LLMResponse(content=reply, latency_ms=round(latency_ms, 2))
@@ -337,15 +310,12 @@ class AzureOpenAIProvider(LLMProvider):
         customer_name: str
     ) -> Dict[str, Any]:
         """
-        Produce structured JSON post-call summary, sentiment, objections, and buying intent score.
-        Uses Groq/OpenAI if available, with heuristic fallback.
+        Produce structured JSON post-call summary, sentiment, objections, and buying intent score using Groq.
         """
         full_text = " ".join([f"{t.get('role', '')}: {t.get('text', '')}" for t in transcript]).lower()
 
-        # Try Groq or OpenAI for AI-powered analysis
-        analysis_client = self.groq_client or self.openai_client
-        model = self.groq_model if self.groq_client else settings.OPENAI_MODEL
-        if analysis_client and transcript:
+        # Try Groq for AI-powered call analysis
+        if self.groq_client and transcript:
             prompt = (
                 f"You are a sales call analyst. Analyze this call transcript between a sales agent selling '{product_name}' "
                 f"and customer '{customer_name}':\n\n"
@@ -359,23 +329,26 @@ class AzureOpenAIProvider(LLMProvider):
                 "- recommended_action: 1 sentence next action for the sales team\n"
                 "- follow_up_required: boolean"
             )
-            try:
-                resp = await analysis_client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=250
-                )
-                raw = resp.choices[0].message.content.strip()
-                # Clean code blocks if present
-                if "```json" in raw:
-                    raw = raw.split("```json")[1].split("```")[0].strip()
-                elif "```" in raw:
-                    raw = raw.split("```")[1].split("```")[0].strip()
-                data = json.loads(raw)
-                return data
-            except Exception as e:
-                logger.warning(f"AI call analysis failed: {e}. Using heuristic analyzer.")
+            models_to_try = [self.groq_model, "qwen/qwen3.8-27b", "allam-2-7b"]
+            for model_name in models_to_try:
+                if not model_name:
+                    continue
+                try:
+                    resp = await self.groq_client.chat.completions.create(
+                        model=model_name,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.1,
+                        max_tokens=250
+                    )
+                    raw = resp.choices[0].message.content.strip()
+                    if "```json" in raw:
+                        raw = raw.split("```json")[1].split("```")[0].strip()
+                    elif "```" in raw:
+                        raw = raw.split("```")[1].split("```")[0].strip()
+                    data = json.loads(raw)
+                    return data
+                except Exception as e:
+                    logger.warning(f"Groq call analysis with {model_name} failed: {e}")
 
         # Heuristic Analysis Fallback
         buying_intent = 0.5
@@ -397,18 +370,18 @@ class AzureOpenAIProvider(LLMProvider):
             outcome = "human_handoff"
             buying_intent = 0.75
 
-        if any(w in full_text for w in ["yes", "interested", "send link", "sign up", "open account", "sounds good"]):
+        if any(w in full_text for w in ["yes", "interested", "tell me more", "sounds good"]):
             outcome = "interested"
             sentiment = "positive"
             buying_intent = 0.85
 
-        if any(w in full_text for w in ["done", "sign me up", "let's do it"]):
+        if any(w in full_text for w in ["done", "sign me up", "let's do it", "buy"]):
             outcome = "converted"
             sentiment = "positive"
             buying_intent = 0.95
 
-        summary = f"Spoke with {customer_name} regarding {product_name}. Customer discussed feature highlights and flexibility. Outcome identified as {outcome.replace('_', ' ').title()}."
-        rec_action = "Follow up with WhatsApp summary and schedule a product demo call within 24 hours."
+        summary = f"Spoke with {customer_name} regarding {product_name}. Customer discussed feature highlights and details. Outcome identified as {outcome.replace('_', ' ').title()}."
+        rec_action = f"Follow up with product specifications and schedule a follow-up call within 24 hours."
 
         return {
             "outcome": outcome,
@@ -419,3 +392,7 @@ class AzureOpenAIProvider(LLMProvider):
             "recommended_action": rec_action,
             "follow_up_required": outcome in ["interested", "callback_requested", "human_handoff"]
         }
+
+
+# Alias AzureOpenAIProvider to GroqLLMProvider for backward compatibility
+AzureOpenAIProvider = GroqLLMProvider
